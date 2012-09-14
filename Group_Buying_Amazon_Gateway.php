@@ -63,12 +63,10 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		self::$return_url = get_option(self::RETURN_URL_OPTION, Group_Buying_Checkouts::get_url());
 
 		add_action( 'admin_init', array( $this, 'register_settings' ), 10, 0 );
-		//add_action( 'purchase_completed', array( $this, 'capture_purchase' ), 10, 1 );
-		//add_action( self::CRON_HOOK, array( $this, 'capture_pending_payments' ) );
 
 		add_filter( 'gb_checkout_payment_controls', array( $this, 'payment_controls' ), 20, 2 );
-
-		//add_action( 'gb_send_offsite_for_payment', array( $this, 'send_offsite' ), 10, 1 );
+		
+		add_action( 'gb_send_offsite_for_payment', array( $this, 'send_offsite' ), 10, 1 );
 		add_action( 'gb_load_cart', array( $this, 'back_from_amazon' ), 10, 0 );
 	}
 
