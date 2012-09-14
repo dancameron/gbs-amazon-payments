@@ -133,6 +133,7 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 	 * @return void
 	 */
 	public function back_from_amazon() {
+		if ( self::returned_from_offsite() ) {
 			self::set_token( urldecode( $_GET['tokenId'] ) );
 			// let the checkout know that this isn't a fresh start
 			// Note: This is where the magic happens so that GBS doesn't restart checkout 
