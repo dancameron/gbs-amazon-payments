@@ -76,6 +76,8 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 
 		add_action( 'gb_send_offsite_for_payment', array( $this, 'send_offsite' ), 10, 1 );
 		add_action( 'gb_load_cart', array( $this, 'back_from_amazon' ), 10, 0 );
+		
+		add_action( 'purchase_completed', array( $this, 'complete_purchase' ), 10, 1 );
 	}
 
 	public static function register() {
@@ -242,8 +244,31 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 
 		return $payment;
 	}
+
+	/**
+	 * Complete the purchase after the process_payment action, otherwise vouchers will not be activated.
+	 *
+	 * @param Group_Buying_Purchase $purchase
+	 * @return void
+	 */
+	public function complete_purchase( Group_Buying_Purchase $purchase ) {
+		$items_captured = array(); // Creating simple array of items that are captured
+		foreach ( $purchase->get_products() as $item ) {
+			$items_captured[] = $item['deal_id'];
+		}
+		$payments = Group_Buying_Payment::get_payments_for_purchase( $purchase->get_id() );
+		foreach ( $payments as $payment_id ) {
+			$payment = Group_Buying_Payment::get_instance( $payment_id );
+			do_action( 'payment_captured', $payment, $items_captured );
+			do_action( 'payment_complete', $payment );
+			$payment->set_status( Group_Buying_Payment::STATUS_COMPLETE );
+		}
+	}
+
+	private function build_cbui_data( Group_Buying_Checkouts $checkout ) {
 		$cbui_data = array();
 		$cart = $checkout->get_cart();
+
 		if ( $cart->get_total() < 0.01 ) { // for free deals.
 			return array();
 		}
