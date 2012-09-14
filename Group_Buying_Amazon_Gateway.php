@@ -73,7 +73,7 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		add_action( 'admin_init', array( $this, 'register_settings' ), 10, 0 );
 
 		add_filter( 'gb_checkout_payment_controls', array( $this, 'payment_controls' ), 20, 2 );
-		
+
 		add_action( 'gb_send_offsite_for_payment', array( $this, 'send_offsite' ), 10, 1 );
 		add_action( 'gb_load_cart', array( $this, 'back_from_amazon' ), 10, 0 );
 	}
@@ -82,12 +82,6 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		self::add_payment_processor( __CLASS__, self::__( 'Amazon' ) );
 	}
 
-	private function build_cbui_data( Group_Buying_Checkouts $checkout ) {
-		/* Mismatches between amazon and paypal
-			$nvpData['USER'] = self::$api_username;
-			$nvpData['PWD'] = self::$api_password;
-			$nvpData['SIGNATURE'] = self::$api_signature;
-			$nvpData['VERSION'] = self::$version;
 	/**
 	 * Instead of redirecting to the GBS checkout page,
 	 * set up the transaction and redirect to amazon
@@ -121,8 +115,6 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		}
 	}
 
-			$nvpData['TOKEN'] = self::get_token();
-			$nvpData['PAYERID'] = self::get_payerid();
 	/**
 	 * We're on the checkout page, just back from PayPal.
 	 * Store the token and payer ID that PayPal gives us
@@ -146,18 +138,8 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		}
 	}
 
-			$nvpData['METHOD'] = 'DoExpressCheckoutPayment';
-			$nvpData['PAYMENTREQUEST_0_PAYMENTACTION'] = 'Authorization';
-			$nvpData['IPADDRESS'] = $_SERVER ['REMOTE_ADDR'];
 
-			$nvpData['PAYMENTREQUEST_0_INVNUM'] = $purchase->get_id();
-			$nvpData['BUTTONSOURCE'] = self::PLUGIN_NAME;
 
-			$nvpData['NOSHIPPING'] = 2;
-			$nvpData['ADDROVERRIDE'] = 1;
-			$nvpData['PAYMENTREQUEST_0_SHIPTONAME'] = $checkout->cache['shipping']['first_name'].' '.$checkout->cache['shipping']['last_name'];
-			$nvpData['PAYMENTREQUEST_0_SHIPTOSTATE'] = $checkout->cache['shipping']['zone'];
-		 */
 
 		$cbui_data = array();
 		$cart = $checkout->get_cart();
