@@ -138,9 +138,110 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		}
 	}
 
+	/**
+	 * Process a payment
+	 *
+	 * @param Group_Buying_Checkouts $checkout
+	 * @param Group_Buying_Purchase $purchase
+	 * @return Group_Buying_Payment|bool FALSE if the payment failed, otherwise a Payment object
+	 */
+	public function process_payment( Group_Buying_Checkouts $checkout, Group_Buying_Purchase $purchase ) {
+		if ( $purchase->get_total( self::get_payment_method() ) < 0.01 ) {
+			// Nothing to do here, another payment handler intercepted and took care of everything
+			// See if we can get that payment and just return it
+			$payments = Group_Buying_Payment::get_payments_for_purchase( $purchase->get_id() );
+			foreach ( $payments as $payment_id ) {
+				$payment = Group_Buying_Payment::get_instance( $payment_id );
+				return $payment;
+			}
+		}
+
+		// OK, we got here and it's the final step.
+		// This is where "you must send Amazon FPS a Pay (or Reserve) request to actually transfer money from the buyer to the merchant."
+		// "This request requires, as a parameter, the tokenID returned by the CBUI in the URI."
+		// use self::get_token() to get the tokenID
 
 
+		// Get a built array of what's supposed to be sent to Amazon FPS
+		$post_data = $this->process_nvp_data( $checkout, $purchase );
 
+		if ( self::DEBUG ) { // For debug use only
+			error_log( '----------PayPal EC Authorization Request ----------' );
+			error_log( print_r( $post_data, TRUE ) );
+		}
+
+		// Post the data
+		$response = wp_remote_post( self::get_api_url(), array(
+				'method' => 'POST',
+				'body' => $post_data,
+				'timeout' => apply_filters( 'http_request_timeout', 15 ),
+				'sslverify' => false
+			) );
+
+		if ( self::DEBUG ) { // For debug use only
+			error_log( '----------PayPal EC Authorization Response (Raw) ----------' );
+			error_log( print_r( $response, TRUE ) );
+		}
+
+		// Check if the WP HTTP transport sent back an error.
+		if ( is_wp_error( $response ) ) {
+			return FALSE;
+		}
+
+		// Get the body of the response
+		$response = wp_remote_retrieve_body( $response );
+
+		if ( self::DEBUG ) {
+			error_log( '----------PayPal EC Authorization Response (Parsed) ----------' );
+			error_log( print_r( $response, TRUE ) );
+		}
+
+		// Make sure to cehck to see the response gave back the correct response codes (or whatever) to make sure the payment was processed correctly.
+		// return FALSE; if not successful.
+		// continue if processed
+		
+		// create loop of deals for the payment post
+		$deal_info = array();
+		foreach ( $purchase->get_products() as $item ) {
+			if ( isset( $item['payment_method'][self::get_payment_method()] ) ) {
+				if ( !isset( $deal_info[$item['deal_id']] ) ) {
+					$deal_info[$item['deal_id']] = array();
+				}
+				$deal_info[$item['deal_id']][] = $item;
+			}
+		}
+		if ( isset( $checkout->cache['shipping'] ) ) {
+			$shipping_address = array();
+			$shipping_address['first_name'] = $checkout->cache['shipping']['first_name'];
+			$shipping_address['last_name'] = $checkout->cache['shipping']['last_name'];
+			$shipping_address['street'] = $checkout->cache['shipping']['street'];
+			$shipping_address['city'] = $checkout->cache['shipping']['city'];
+			$shipping_address['zone'] = $checkout->cache['shipping']['zone'];
+			$shipping_address['postal_code'] = $checkout->cache['shipping']['postal_code'];
+			$shipping_address['country'] = $checkout->cache['shipping']['country'];
+		}
+		// create new payment
+		$payment_id = Group_Buying_Payment::new_payment( array(
+				'payment_method' => self::get_payment_method(),
+				'purchase' => $purchase->get_id(),
+				'amount' => $response['amount'], // TODO set the amount captured
+				'data' => array(
+					'api_response' => $response, // Set the API response, something that's useful
+				),
+				'transaction_id' => $response[], // TODO set the transaction ID
+				'deals' => $deal_info,
+				'shipping_address' => $shipping_address,
+			), Group_Buying_Payment::STATUS_AUTHORIZED );
+		if ( !$payment_id ) {
+			return FALSE;
+		}
+		$payment = Group_Buying_Payment::get_instance( $payment_id );
+		do_action( 'payment_authorized', $payment );
+
+		self::unset_token();
+
+		return $payment;
+	}
 		$cbui_data = array();
 		$cart = $checkout->get_cart();
 		if ( $cart->get_total() < 0.01 ) { // for free deals.
