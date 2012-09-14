@@ -103,12 +103,14 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		}
 
 		// Check for a token just in case the customer is coming back from amazon.
+		if ( !self::returned_from_offsite() && $_REQUEST['gb_checkout_action'] == Group_Buying_Checkouts::PAYMENT_PAGE ) {
 
-			// Setup 
-			$redirect = $this->get_redirect_url( $checkout );
+			// setup authorization
+			$authorization_data = $this->build_cbui_data( $checkout );
+			$cbui_pipeline = $this->get_cbui_pipeline( $authorization_data );
 
-			if ( $redirect ) {
-				wp_redirect ( $redirect );
+			if ( !empty( $cbui_url ) ) {
+				wp_redirect ( $cbui_url );
 				exit();
 			} 
 			else { // If an error occurred, with $url than redirect back to the cart and provide a message
@@ -318,86 +320,6 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			);
 
 			return self::$authorization_pipeline;
-		}
-	}
-
-	/**
-	 * Instead of redirecting to the GBS checkout page,
-	 * set up the CBUI and redirect there
-	 *
-	 * @param Group_Buying_Carts $cart
-	 * @return void
-	 */
-	public function send_offsite( Group_Buying_Checkouts $checkout ) {
-		// setup authorization
-		$authorization_data = $this->build_cbui_data( $checkout );
-		$cbui_pipeline = $this->get_cbui_pipeline( $authorization_data );
-
-
-		if (
-			// TODO: Not sure if this is proper logic
-			!isset( $_GET['token'] )
-			&& $_REQUEST['gb_checkout_action'] == Group_Buying_Checkouts::PAYMENT_PAGE
-		) {
-			$cbui_url = $cbui_pipeline->getURL();
-			if ( isset($cbui_url) && !empty( $cbui_url ) ) {
-				if ( self::DEBUG ) {
-					error_log( '----------CBUI Url----------' );
-					error_log( $cbui_url );
-				}
-
-				wp_redirect( $cbui_url );
-				exit;
-			}
-
-			/* Pretty sure all of this is unneccessary
-
-			$post_data = $this->build_cbui_data( $checkout );
-			if ( !$post_data ) {
-				return; // paying for it some other way
-			}
-
-			if ( self::DEBUG ) {
-				error_log( '----------Filtered post_data----------' );
-				error_log( print_r( $post_data, TRUE ) );
-			}
-
-			$response = wp_remote_post( $post_data->get_url(), array(
-				'method' => 'GET',
-				'body' => $post_data,
-				'timeout' => apply_filters( 'http_request_timeout', 15 ),
-				'sslverify' => false
-			) );
-
-			if ( self::DEBUG ) {
-				error_log( '----------PayPal EC Approval Response----------' );
-				error_log( print_r( $response, TRUE ) );
-			}
-
-			if ( is_wp_error( $response ) ) {
-				return FALSE;
-			}
-
-			$response = wp_parse_args( wp_remote_retrieve_body( $response ) );
-
-			if ( self::DEBUG ) {
-				error_log( '----------PayPal EC Approval Response (Parsed)----------' );
-				error_log( print_r( $response, TRUE ) );
-			}
-
-			$ack = strtoupper( $response['ACK'] );
-			if ( $ack == 'SUCCESS' ) {
-				$_SESSION['TOKEN'] = urldecode( $response['TOKEN'] ); // needed?
-				self::$token = urldecode( $response['TOKEN'] ); // set var for redirect use
-				self::redirect();
-			} else {
-				update_option( self::LOGS, $response );
-				self::set_error_messages( $response['L_LONGMESSAGE0'] );
-				wp_redirect( Group_Buying_Carts::get_url(), 303 );
-				exit();
-			}
-
-			*/
 		}
 	}
 
