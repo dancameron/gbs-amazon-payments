@@ -1,8 +1,11 @@
 <?php
 /**
- * Sets up the amazon payments gateway for GBS
+ * Amazon FPS offsite payment processor.
+ *
+ * @package GBS
+ * @subpackage Payment Processing_Processor
  */
-class Group_Buying_Amazon_Gateway extends Group_Buying_Credit_Card_Processors  {
+class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 
 	// Endpoints
 	const PROD_ENDPOINT_URL = "https://fps.amazonaws.com";
@@ -17,20 +20,22 @@ class Group_Buying_Amazon_Gateway extends Group_Buying_Credit_Card_Processors  {
 	// API config data
 	const API_AWS_USERNAME_OPTION = "gb_amazon_aws_username";
 	const API_AWS_SECRET_KEY_OPTION = "gb_amazon_aws_secret_key";
-
-	// TODO: Dan should fill these in
-	const API_CC_OPTION = "";
-	const PAYMENT_METHOD_OPTION = "";
+	const API_SIGNATURE_OPTION = "gb_amazon_signature";
 
 	// Used by amazon to reference the incoming request
 	const CALLER_REFERENCE_PREFIX = "gbs_";
+	const CANCEL_URL_OPTION = 'gb_amazon_cancel_url';
+	const RETURN_URL_OPTION = 'gb_amazon_return_url';
 
-	private $api_mode = self::API_MODE_SANDBOX;
-	private static $authorized = FALSE;
+	protected static $api_mode = self::API_MODE_SANDBOX;
+	private static $authorization_pipeline = FALSE;
+	private static $token;
 
-	private $aws_username;
-	private $aws_secret_key;
-	private $currency_code;
+	private static $aws_username;
+	private static $aws_secret_key;
+	private static $currency_code;
+	private static $cancel_url = '';
+	private static $return_url = '';
 
 	private function get_api_url() {
 		switch( self::$api_mode ) {
@@ -50,73 +55,333 @@ class Group_Buying_Amazon_Gateway extends Group_Buying_Credit_Card_Processors  {
 	public function __construct() {
 		parent::__construct();
 
-		$this->aws_username = get_option( self::API_AWS_USERNAME_OPTION, '' );
-		$this->aws_secret_key = get_option( self::API_AWS_SECRET_KEY_OPTION, '' );
-		$this->api_mode = get_option( self::API_MODE_OPTION, self::API_MODE_SANDBOX );
-		$this->currency_code = get_option(self::API_CC_OPTION, 'USD');
+		self::$aws_username = get_option( self::API_AWS_USERNAME_OPTION, '' );
+		self::$aws_secret_key = get_option( self::API_AWS_SECRET_KEY_OPTION, '' );
+		self::$api_mode = get_option( self::API_MODE_OPTION, self::API_MODE_SANDBOX );
+		self::$currency_code = get_option(self::API_CC_OPTION, 'USD');
+		self::$cancel_url = get_option(self::CANCEL_URL_OPTION, Group_Buying_Carts::get_url());
+		self::$return_url = get_option(self::RETURN_URL_OPTION, Group_Buying_Checkouts::get_url());
 
-		// TODO: Dan should add construct actions/filters here so I don't break something and explode customers' servers
+		add_action( 'admin_init', array( $this, 'register_settings' ), 10, 0 );
+		//add_action( 'purchase_completed', array( $this, 'capture_purchase' ), 10, 1 );
+		//add_action( self::CRON_HOOK, array( $this, 'capture_pending_payments' ) );
+
+		add_filter( 'gb_checkout_payment_controls', array( $this, 'payment_controls' ), 20, 2 );
+
+		//add_action( 'gb_send_offsite_for_payment', array( $this, 'send_offsite' ), 10, 1 );
+		add_action( 'gb_load_cart', array( $this, 'back_from_amazon' ), 10, 0 );
 	}
 
 	public static function register() {
 		self::add_payment_processor( __CLASS__, self::__( 'Amazon' ) );
 	}
 
-	private function authorize_payment( $auth_data = array() ) {
-		if ( self::$authorized ) return TRUE;
+	private function build_cbui_data( Group_Buying_Checkouts $checkout ) {
+		/* Mismatches between amazon and paypal
+			$nvpData['USER'] = self::$api_username;
+			$nvpData['PWD'] = self::$api_password;
+			$nvpData['SIGNATURE'] = self::$api_signature;
+			$nvpData['VERSION'] = self::$version;
 
-		$defaults = array(
-			'caller_reference' => 'gbsCREFSingleUse',
-			'return_url' => get_site_url(),
-			'currency_code' => $this->currency_code,
-			'payment_reason' => '',
-			'shipping_local' => '', // string
-			'subtotal' => 0, // int|float
-			'shipping' => 0, // int|float
-			'tax' => 0, // int|float
-			'total' => 0, // int|float
-		);
+			$nvpData['TOKEN'] = self::get_token();
+			$nvpData['PAYERID'] = self::get_payerid();
 
-		wp_parse_args( $auth_data, $defaults );
+			$nvpData['METHOD'] = 'DoExpressCheckoutPayment';
+			$nvpData['PAYMENTREQUEST_0_PAYMENTACTION'] = 'Authorization';
+			$nvpData['IPADDRESS'] = $_SERVER ['REMOTE_ADDR'];
 
-		// TODO: Update to MultiUse
-		$pipeline = new Amazon_FPS_CBUISingleUsePipeline($this->aws_username, $this->aws_secret_key);
-		$pipeline->setMandatoryParameters(
-			$auth_data['caller_reference'],
-			$auth_data['return_url'],
-			$auth_data['total']
-		);
+			$nvpData['PAYMENTREQUEST_0_INVNUM'] = $purchase->get_id();
+			$nvpData['BUTTONSOURCE'] = self::PLUGIN_NAME;
 
-		// TODO: setup an endpoint URL with router for calling process_payment
+			$nvpData['NOSHIPPING'] = 2;
+			$nvpData['ADDROVERRIDE'] = 1;
+			$nvpData['PAYMENTREQUEST_0_SHIPTONAME'] = $checkout->cache['shipping']['first_name'].' '.$checkout->cache['shipping']['last_name'];
+			$nvpData['PAYMENTREQUEST_0_SHIPTOSTATE'] = $checkout->cache['shipping']['zone'];
+		 */
 
-		// Add parameters to be displayed on the CBUI
-		$cc = $auth_data['currency_code'];
-		if ( isset($cc) )
-			$pipeline->addParameter('currencyCode', $auth_data['currency_code']);
+		$cbui_data = array();
+		$cart = $checkout->get_cart();
+		if ( $cart->get_total() < 0.01 ) { // for free deals.
+			return array();
+		}
 
-		$pr = $auth_data['payment_reason'];
-		if ( isset($pr) )
-			$pipeline->addParameter('paymentReason', $auth_data['payment_reason']);
+		$user = get_userdata( get_current_user_id() );
+		$filtered_total = $this->get_payment_request_total( $checkout );
+		if ( $filtered_total < 0.01 ) {
+			return array();
+		}
 
-		$sh_l = $auth_data['shipping_local'];
-		if ( isset($sh_l) )
-			$pipeline->addParameter('addressName', $auth_data['shipping_local']);
+		$cbui_data['currency_code'] = self::get_currency_code();
+		$cbui_data['total'] = gb_get_number_format( $filtered_total );
+		$cbui_data['subtotal'] = gb_get_number_format( $cart->get_subtotal() );
+		$cbui_data['shipping'] = gb_get_number_format( $cart->get_shipping_total() );
+		$cbui_data['tax'] = gb_get_number_format( $cart->get_tax_total() );
 
-		$sh_t = $auth_data['shipping'];
-		if ( isset($sh_t) )
-			$pipeline->addParameter('shipping', $auth_data['shipping']);
+		if ( isset( $checkout->cache['shipping'] ) ) {
+			$cache = $checkout->cache['shipping'];
+			$cbui_data['shipping_local'] = array(
+				'street' => $cache['street'],
+				'city' => $cache['city'],
+				'postal_code' => $cache['postal_code'],
+				'country' => $cache['country'],
+			);
+		}
 
-		$su_t = $auth_data['subtotal'];
-		if ( isset($su_t) )
-			$pipeline->addParameter('itemTotal', $auth_data['subtotal']);
+		$i = 0;
+		if (
+			$cbui_data['subtotal'] == gb_get_number_format( 0 ) ||
+			( $filtered_total < $cart->get_total()
+			&& ( $cart->get_subtotal() + $filtered_total - $cart->get_total() ) == 0
+			)
+		) {
+			// handle free/credit purchases (paypal requires minimum 0.01 item amount)
+			if ( $cbui_data['shipping'] != gb_get_number_format( 0 ) ) {
+				$cbui_data['subtotal'] = $cbui_data['shipping'];
+				$cbui_data['shipping'] = gb_get_number_format( 0 );
+			} elseif ( $cbui_data['tax'] != gb_get_number_format( 0 ) ) {
+				$cbui_data['subtotal'] = $cbui_data['tax'];
+				$cbui_data['tax'] = gb_get_number_format( 0 );
+			}
+		} else {
+			/* I don't think we can set line by line items in Amazon, only total charge amounts
 
-		$ta_t = $auth_data['tax'];
-		if ( isset($ta_t) )
-			$pipeline->addParameter('tax', $auth_data['tax']);
+			foreach ( $cart->get_items() as $key => $item ) {
+				$deal = Group_Buying_Deal::get_instance( $item['deal_id'] );
+				$cbui_data['L_PAYMENTREQUEST_0_NAME'.$i] = $deal->get_title( $item['data'] );
+				$cbui_data['L_PAYMENTREQUEST_0_AMT'.$i] = gb_get_number_format( $deal->get_price( NULL, $item['data'] ) );
+				$cbui_data['L_PAYMENTREQUEST_0_NUMBER'.$i] = $item['deal_id'];
+				$cbui_data['L_PAYMENTREQUEST_0_QTY'.$i] = $item['quantity'];
+				$i++;
+			}
+			if ( $filtered_total < $cart->get_total() ) {
+				$cbui_data['L_PAYMENTREQUEST_0_NAME'.$i] = self::__( 'Applied Credit' );
+				$cbui_data['L_PAYMENTREQUEST_0_AMT'.$i] = gb_get_number_format( $filtered_total - $cart->get_total() );
+				$cbui_data['L_PAYMENTREQUEST_0_QTY'.$i] = '1';
+				$cbui_data['PAYMENTREQUEST_0_ITEMAMT'] = gb_get_number_format( $cart->get_subtotal() + $filtered_total - $cart->get_total() );
+			}
+			*/
+		}
 
-		// TODO: No idea if this causes problems with WP_Router
-		wp_redirect( $pipeline->getURL() );
-		exit;
+		$cbui_data['return_url'] = self::$return_url;
+		$cbui_data['cancel_url'] = self::$cancel_url; // Needed?
+		$cbui_data['signature'] = $this->generate_signature();
+		$cbui_data = apply_filters( 'gb_amazon_cbui_data', $cbui_data, $checkout );
+
+		return $cbui_data;
+	}
+
+	/**
+	 * Takes pre-defined authorization data and retrieves a pipeline from
+	 * the amazon api for redirecting a user.
+	 *
+	 * @param array $auth_data
+	 * @param bool  $_re_cache
+	 *
+	 * @return Amazon_FPS_CBUISingleUsePipeline|bool
+	 */
+	private function get_cbui_pipeline( $auth_data = array(), $_re_cache = FALSE ) {
+		if ( !isset(self::$authorization_pipeline) || $_re_cache ) {
+			// Build cbui token from scratch
+			$defaults = array(
+				'caller_reference' => 'gbsCREFSingleUse',
+				'return_url' => get_site_url(),
+				'currency_code' => $this->currency_code,
+				'payment_reason' => '',
+				'shipping_local' => '', // string
+				'subtotal' => 0, // int|float
+				'shipping' => 0, // int|float
+				'tax' => 0, // int|float
+				'total' => 0, // int|float
+			);
+
+			wp_parse_args( $auth_data, $defaults );
+
+			if (
+				empty( $auth_data['caller_reference'] ) ||
+				empty( $auth_data['return_url'] ) ||
+				empty( $auth_data['total'] )
+			) {
+				return FALSE;
+			}
+
+			$pipeline = new Amazon_FPS_CBUISingleUsePipeline($this->aws_username, $this->aws_secret_key);
+			$pipeline->setMandatoryParameters(
+				$auth_data['caller_reference'],
+				$auth_data['return_url'],
+				$auth_data['total']
+			);
+
+			// Multi-use pipeline parameters, not necessary for single-use
+			/*
+			$pipeline->addParameter('usageLimitType1', 'Amount');
+
+			$t_tl = $auth_data['token_time_limit'];
+			if ( isset($t_tl) ) return FALSE;
+			$pipeline->addParameter('usageLimitPeriod1', $auth_data['token_time_limit']);
+
+			$t_ma = $auth_data['token_max_amount'];
+			if ( !isset($t_ma) ) return FALSE;
+			$pipeline->addParameter('usageLimitValue', $auth_data['token_max_amount']);
+			*/
+
+			// Add parameters to be displayed on the CBUI
+			$cc = $auth_data['currency_code'];
+			if ( isset($cc) )
+				$pipeline->addParameter('currencyCode', $auth_data['currency_code']);
+
+			$pr = $auth_data['payment_reason'];
+			if ( isset($pr) )
+				$pipeline->addParameter('paymentReason', $auth_data['payment_reason']);
+
+			// Shipping address etc.
+			$sh_t = $auth_data['shipping_local'];
+			if ( isset($sh_t) && !empty($auth_data['shipping']) ) {
+				$pipeline->addParameter('addressLine1', $auth_data['shipping']['street']);
+				$pipeline->addParameter('city', $auth_data['shipping']['city']);
+				$pipeline->addParameter('state', $auth_data['shipping']['state']);
+				$pipeline->addParameter('country', $auth_data['shipping']['country']);
+				$pipeline->addParameter('zip', $auth_data['shipping']['postal_code']);
+			}
+
+			// The cost of shipping
+			$sh_l = $auth_data['shipping'];
+			if ( isset($sh_l) )
+				$pipeline->addParameter('shipping', $auth_data['shipping']);
+
+			$su_t = $auth_data['subtotal'];
+			if ( isset($su_t) )
+				$pipeline->addParameter('itemTotal', $auth_data['subtotal']);
+
+			$ta_t = $auth_data['tax'];
+			if ( isset($ta_t) )
+				$pipeline->addParameter('tax', $auth_data['tax']);
+
+			$auth_data = apply_filters( 'gb_amazon_auth_data', $auth_data );
+			if ( self::DEBUG ) {
+				error_log( '----------Amazon CBUI Pipline Data----------' );
+				error_log( print_r( $auth_data, TRUE ) );
+			}
+
+			// Static cache and return the pipeline
+			self::$authorization_pipeline = $pipeline;
+			return self::$authorization_pipeline;
+		} else {
+			// if we're rebuilding from a cached token, just update the mandatory parameters
+			if (
+				empty( $auth_data['caller_reference'] ) ||
+				empty( $auth_data['return_url'] ) ||
+				empty( $auth_data['total'] )
+			) {
+				return FALSE;
+			}
+
+			self::$authorization_pipeline->setMandatoryParameters(
+				$auth_data['caller_reference'],
+				$auth_data['return_url'],
+				$auth_data['total']
+			);
+
+			return self::$authorization_pipeline;
+		}
+	}
+
+	/**
+	 * Instead of redirecting to the GBS checkout page,
+	 * set up the CBUI and redirect there
+	 *
+	 * @param Group_Buying_Carts $cart
+	 * @return void
+	 */
+	public function send_offsite( Group_Buying_Checkouts $checkout ) {
+		// setup authorization
+		$authorization_data = $this->build_cbui_data( $checkout );
+		$cbui_pipeline = $this->get_cbui_pipeline( $authorization_data );
+
+
+		if (
+			// TODO: Not sure if this is proper logic
+			!isset( $_GET['token'] )
+			&& $_REQUEST['gb_checkout_action'] == Group_Buying_Checkouts::PAYMENT_PAGE
+		) {
+			$cbui_url = $cbui_pipeline->getURL();
+			if ( isset($cbui_url) && !empty( $cbui_url ) ) {
+				if ( self::DEBUG ) {
+					error_log( '----------CBUI Url----------' );
+					error_log( $cbui_url );
+				}
+
+				wp_redirect( $cbui_url );
+				exit;
+			}
+
+			/* Pretty sure all of this is unneccessary
+
+			$post_data = $this->build_cbui_data( $checkout );
+			if ( !$post_data ) {
+				return; // paying for it some other way
+			}
+
+			if ( self::DEBUG ) {
+				error_log( '----------Filtered post_data----------' );
+				error_log( print_r( $post_data, TRUE ) );
+			}
+
+			$response = wp_remote_post( $post_data->get_url(), array(
+				'method' => 'GET',
+				'body' => $post_data,
+				'timeout' => apply_filters( 'http_request_timeout', 15 ),
+				'sslverify' => false
+			) );
+
+			if ( self::DEBUG ) {
+				error_log( '----------PayPal EC Approval Response----------' );
+				error_log( print_r( $response, TRUE ) );
+			}
+
+			if ( is_wp_error( $response ) ) {
+				return FALSE;
+			}
+
+			$response = wp_parse_args( wp_remote_retrieve_body( $response ) );
+
+			if ( self::DEBUG ) {
+				error_log( '----------PayPal EC Approval Response (Parsed)----------' );
+				error_log( print_r( $response, TRUE ) );
+			}
+
+			$ack = strtoupper( $response['ACK'] );
+			if ( $ack == 'SUCCESS' ) {
+				$_SESSION['TOKEN'] = urldecode( $response['TOKEN'] ); // needed?
+				self::$token = urldecode( $response['TOKEN'] ); // set var for redirect use
+				self::redirect();
+			} else {
+				update_option( self::LOGS, $response );
+				self::set_error_messages( $response['L_LONGMESSAGE0'] );
+				wp_redirect( Group_Buying_Carts::get_url(), 303 );
+				exit();
+			}
+
+			*/
+		}
+	}
+
+	/**
+	 * We're on the checkout page, just back from Amazon.
+	 * Store the token and payer ID that Amazon gives us
+	 *
+	 * @return void
+	 */
+	public function back_from_amazon() {
+		// TODO: rebuild for amazon
+		if ( isset( $_GET['token'] ) && isset( $_GET['PayerID'] ) ) {
+			self::set_token( urldecode( $_GET['token'] ) );
+			self::set_payerid( urldecode( $_GET['PayerID'] ) );
+			// let the checkout know that this isn't a fresh start
+			$_REQUEST['gb_checkout_action'] = 'back_from_amazon';
+		} elseif ( !isset( $_REQUEST['gb_checkout_action'] ) ) {
+			// this is a new checkout. clear the token so we don't give things away for free
+			self::unset_token();
+		}
 	}
 
 	/**
@@ -126,18 +391,23 @@ class Group_Buying_Amazon_Gateway extends Group_Buying_Credit_Card_Processors  {
 
 	}
 
-	/**
-	 * Capture a payment for processing later
-	 *
-	 * @param $amount
-	 * @param $payment_title
-	 * @param $payment_reason
-	 * @param int $time
-	 */
-	public function capture_payment( $amount, $payment_title, $payment_reason, $time = 0 ) {
-		if ( $time === 0 ) $time = time();
-		if ( $amount <= 0 ) return false;
-		$caller_reference = "";
+	private function get_currency_code() {
+		return apply_filters( 'gb_amazon_ec_currency_code', self::$currency_code );
+	}
+
+	public static function set_token( $token ) {
+		global $blog_id;
+		update_user_meta( get_current_user_id(), $blog_id.'_'.self::TOKEN_KEY, $token );
+	}
+
+	public static function unset_token() {
+		global $blog_id;
+		delete_user_meta( get_current_user_id(), $blog_id.'_'.self::TOKEN_KEY );
+	}
+
+	public static function get_token() {
+		global $blog_id;
+		return get_user_meta( get_current_user_id(), $blog_id.'_'.self::TOKEN_KEY, TRUE );
 	}
 
 	/**
@@ -148,15 +418,7 @@ class Group_Buying_Amazon_Gateway extends Group_Buying_Credit_Card_Processors  {
 	 * @return Group_Buying_Payment|bool FALSE if the payment failed, otherwise a Payment object
 	 */
 	public function process_payment( Group_Buying_Checkouts $checkout, Group_Buying_Purchase $purchase, $threeD_pass = FALSE ) {
-
-	}
-
-	private function get_api_cc_option() {
-		// TODO: Dan
-	}
-
-	public function get_payment_method() {
-		// TODO: Dan
+		$this->send_offsite( $checkout );
 	}
 
 	/** Singleton Pattern */
