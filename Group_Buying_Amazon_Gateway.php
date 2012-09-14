@@ -88,6 +88,36 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			$nvpData['PWD'] = self::$api_password;
 			$nvpData['SIGNATURE'] = self::$api_signature;
 			$nvpData['VERSION'] = self::$version;
+	/**
+	 * Instead of redirecting to the GBS checkout page,
+	 * set up the transaction and redirect to amazon
+	 *
+	 * @param Group_Buying_Carts $cart
+	 * @return void
+	 */
+	public function send_offsite( Group_Buying_Checkouts $checkout ) {
+
+		$cart = $checkout->get_cart();
+		if ( $cart->get_total() < 0.01 ) { // for free deals.
+			return;
+		}
+
+		// Check for a token just in case the customer is coming back from amazon.
+
+			// Setup 
+			$redirect = $this->get_redirect_url( $checkout );
+
+			if ( $redirect ) {
+				wp_redirect ( $redirect );
+				exit();
+			} 
+			else { // If an error occurred, with $url than redirect back to the cart and provide a message
+				self::set_error_messages( $redirect['error_message_from_return'] );
+				wp_redirect( Group_Buying_Carts::get_url(), 303 );
+				exit();
+			}
+		}
+	}
 
 			$nvpData['TOKEN'] = self::get_token();
 			$nvpData['PAYERID'] = self::get_payerid();
