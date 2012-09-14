@@ -52,6 +52,14 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		return "";
 	}
 
+	public function get_payment_method() {
+		return self::PAYMENT_METHOD;
+	}
+
+	public static function returned_from_offsite() {
+		return ( isset( $_GET['token'] ) && isset( $_GET['PayerID'] ) );
+	}
+
 	public function __construct() {
 		parent::__construct();
 
