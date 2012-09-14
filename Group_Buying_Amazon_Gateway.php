@@ -123,6 +123,27 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 
 			$nvpData['TOKEN'] = self::get_token();
 			$nvpData['PAYERID'] = self::get_payerid();
+	/**
+	 * We're on the checkout page, just back from PayPal.
+	 * Store the token and payer ID that PayPal gives us
+	 *
+	 * "The URI contains not only the endpoint that you specified in returnURL, but also a reference to the payment token, such as a tokenId, and the status of the authorization."
+	 *
+	 *
+	 * @return void
+	 */
+	public function back_from_amazon() {
+			self::set_token( urldecode( $_GET['tokenId'] ) );
+			// let the checkout know that this isn't a fresh start
+			// Note: This is where the magic happens so that GBS doesn't restart checkout 
+			// and knows to land the user on the payment review page and
+			// the process_payment is then fired after the customer lands on the payment review page.
+			$_REQUEST['gb_checkout_action'] = 'back_from_amazon';
+		} elseif ( !isset( $_REQUEST['gb_checkout_action'] ) ) {
+			// this is a new checkout. clear the token so we don't give things away for free
+			self::unset_token();
+		}
+	}
 
 			$nvpData['METHOD'] = 'DoExpressCheckoutPayment';
 			$nvpData['PAYMENTREQUEST_0_PAYMENTACTION'] = 'Authorization';
@@ -323,24 +344,6 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		}
 	}
 
-	/**
-	 * We're on the checkout page, just back from Amazon.
-	 * Store the token and payer ID that Amazon gives us
-	 *
-	 * @return void
-	 */
-	public function back_from_amazon() {
-		// TODO: rebuild for amazon
-		if ( isset( $_GET['token'] ) && isset( $_GET['PayerID'] ) ) {
-			self::set_token( urldecode( $_GET['token'] ) );
-			self::set_payerid( urldecode( $_GET['PayerID'] ) );
-			// let the checkout know that this isn't a fresh start
-			$_REQUEST['gb_checkout_action'] = 'back_from_amazon';
-		} elseif ( !isset( $_REQUEST['gb_checkout_action'] ) ) {
-			// this is a new checkout. clear the token so we don't give things away for free
-			self::unset_token();
-		}
-	}
 
 	/**
 	 * General a signature to be used on payment
