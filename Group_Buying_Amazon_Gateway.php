@@ -501,4 +501,39 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		}
 		return self::$instance;
 	}
-} Group_Buying_Amazon_Gateway::register();
+
+	public function register_settings() {
+		$page = Group_Buying_Payment_Processors::get_settings_page();
+		$section = 'gb_amazon_settings';
+		add_settings_section( $section, self::__( 'Amazon Payments' ), array( $this, 'display_settings_section' ), $page );
+
+		register_setting( $page, self::API_AWS_USERNAME_OPTION );
+		register_setting( $page, self::API_AWS_SECRET_KEY_OPTION );
+		register_setting( $page, self::API_CC_OPTION );
+		register_setting( $page, self::API_MODE_OPTION );
+
+		add_settings_field( self::API_AWS_USERNAME_OPTION, self::__( 'Username' ), array( $this, 'display_api_username_field' ), $page, $section );
+		add_settings_field( self::API_AWS_SECRET_KEY_OPTION, self::__( 'Secret Key' ), array( $this, 'display_api_key_field' ), $page, $section );
+		add_settings_field( self::API_MODE_OPTION, self::__( 'Mode' ), array( $this, 'display_api_mode_field' ), $page, $section );
+		add_settings_field( self::API_CC_OPTION, self::__( 'Currency' ), array( $this, 'display_currency_code_field' ), $page, $section );
+	}
+
+	public function display_api_username_field() {
+		echo '<input type="text" name="'.self::API_AWS_USERNAME_OPTION.'" value="'.$this->api_merchantid.'" size="80" />';
+	}
+
+	public function display_api_key_field() {
+		echo '<input type="text" name="'.self::API_AWS_SECRET_KEY_OPTION.'" value="'.$this->api_secretkey.'" size="80" />';
+	}
+
+	public function display_api_mode_field() {
+		echo '<label><input type="radio" name="'.self::API_MODE_OPTION.'" value="'.self::API_MODE_PRODUCTION.'" '.checked( self::API_MODE_PRODUCTION, $this->api_mode, FALSE ).'/> '.self::__( 'Live' ).'</label><br />';
+		echo '<label><input type="radio" name="'.self::API_MODE_OPTION.'" value="'.self::API_MODE_SANDBOX.'" '.checked( self::API_MODE_SANDBOX, $this->api_mode, FALSE ).'/> '.self::__( 'Sandbox' ).'</label>';
+	}
+
+	public function display_currency_code_field() {
+		echo '<input type="text" name="'.self::API_CC_OPTION.'" value="'.$this->currency_code.'" size="80" />';
+		echo '<br/>'.gb__( 'ISO 4217 e.g. 826' );
+	}
+}
+Group_Buying_Amazon_Gateway::register();
