@@ -6,34 +6,17 @@
  * Description: Amazon payment gateway for group-buying.
  * Author: Sprout Venture
  * Author URI: http://sproutventure.com/wordpress
- * Plugin Author: Jordan Lovato
- * Contributors: Jordan Lovato
+ * Plugin Author: Sprout Venture
+ * Contributors: jbrinley
  * Text Domain: group-buying
 */
 
 if ( !function_exists('load_gbs_amazon_payments') ) {
 	function load_gbs_amazon_payments() {
-		if ( check_deps() ) {
-			set_include_path( get_include_path() . PATH_SEPARATOR . './Amazon' );
-			spl_autoload_register('gbs_amazon_payments_autoload');
-		}
-	}
-
-	function check_deps() {
-		require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
-
-		if ( !is_plugin_active( 'user-groups/user-groups.php' ) ) {
-
-			// Deactivate this plugin if user-groups isn't active
-			$error = new WP_Error( 'dependencies', __( sprintf(
-				'Please activate User Groups before activating User Groups Extender (%s)',
-				"<a href='".admin_url('plugins.php')."'>return</a>"
-			) ) );
-
-			wp_die( $error->get_error_message() );
-		}
-
-		return TRUE;
+		require_once('Group_Buying_Amazon_FPS.php');
+		Group_Buying_Amazon_FPS::register();
+		//set_include_path( get_include_path() . PATH_SEPARATOR . './Amazon' );
+		//spl_autoload_register('gbs_amazon_payments_autoload');
 	}
 
 	function gbs_amazon_payments_autoload( $class_name ) {
@@ -48,13 +31,5 @@ if ( !function_exists('load_gbs_amazon_payments') ) {
 			}
 		}
 	}
-
-	load_gbs_amazon_payments(); // Main screen turn on.
-} else {
-	$error = new WP_Error( 'init', __( sprintf(
-		'Could not activate: plugin namespace ambiguity',
-		"<a href='".admin_url('plugins.php')."'>return</a>"
-	) ) );
-
-	wp_die( $error->get_error_message() );
+	add_action('gb_register_processors', 'load_gbs_amazon_payments');
 }

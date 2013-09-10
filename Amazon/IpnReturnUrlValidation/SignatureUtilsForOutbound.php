@@ -111,9 +111,9 @@ private function httpsRequest($url){
            curl_setopt($curlHandle, CURLOPT_FILETIME, false);
            curl_setopt($curlHandle, CURLOPT_FRESH_CONNECT, true);
            curl_setopt($curlHandle, CURLOPT_SSL_VERIFYPEER, true);
-           curl_setopt($curlHandle, CURLOPT_SSL_VERIFYHOST, true);
-           curl_setopt($curlHandle, CURLOPT_CAINFO, '../../ca-bundle.crt');
-           curl_setopt($curlHandle, CURLOPT_CAPATH, '../../ca-bundle.crt');
+           curl_setopt($curlHandle, CURLOPT_SSL_VERIFYHOST, 2);
+           curl_setopt($curlHandle, CURLOPT_CAINFO, dirname(dirname(__FILE__)).'/ca-bundle.crt');
+           curl_setopt($curlHandle, CURLOPT_CAPATH, dirname(dirname(__FILE__)).'/ca-bundle.crt');
            curl_setopt($curlHandle, CURLOPT_FOLLOWLOCATION, false);
            curl_setopt($curlHandle, CURLOPT_MAXREDIRS, 0);
            curl_setopt($curlHandle, CURLOPT_HEADER, true);
