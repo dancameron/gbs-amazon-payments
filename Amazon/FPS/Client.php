@@ -879,7 +879,7 @@ class Amazon_FPS_Client implements Amazon_FPS_Interface
         curl_setopt($curlHandle, CURLOPT_POSTFIELDS, $query);
         curl_setopt($curlHandle, CURLOPT_FRESH_CONNECT, true);
         curl_setopt($curlHandle, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($curlHandle, CURLOPT_SSL_VERIFYHOST, true);
+        curl_setopt($curlHandle, CURLOPT_SSL_VERIFYHOST, 2);
         curl_setopt($curlHandle, CURLOPT_CAINFO, dirname(dirname(__FILE__)).'/ca-bundle.crt');
         curl_setopt($curlHandle, CURLOPT_CAPATH, dirname(dirname(__FILE__)).'/ca-bundle.crt');
         curl_setopt($curlHandle, CURLOPT_FOLLOWLOCATION, false);
