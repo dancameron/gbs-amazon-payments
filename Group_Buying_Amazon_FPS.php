@@ -89,6 +89,7 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		add_action( 'purchase_completed', array( $this, 'complete_purchase' ), 10, 1 );
 
 		add_action( self::CRON_HOOK, array( $this, 'request_status_updates' ), 10, 0 );
+		add_action( self::CRON_HOOK, array( $this, 'capture_pending_payments' ) );
 	}
 
 	/**
@@ -108,8 +109,8 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		// Check for a token just in case the customer is coming back from amazon.
 		if ( !self::returned_from_offsite() && $_REQUEST['gb_checkout_action'] == Group_Buying_Checkouts::PAYMENT_PAGE ) {
 
-			require_once('GBS_Amazon_FPS_CBUISingleUsePipeline.php');
-			$pipeline = new GBS_Amazon_FPS_CBUISingleUsePipeline($this->aws_access_key, $this->aws_secret_key);
+			require_once('GBS_Amazon_FPS_CBUIMultiUsePipeline.php');
+			$pipeline = new GBS_Amazon_FPS_CBUIMultiUsePipeline($this->aws_access_key, $this->aws_secret_key);
 			if ( self::$api_mode == self::API_MODE_SANDBOX ) {
 				$pipeline->set_sandbox(TRUE);
 			}
@@ -174,31 +175,6 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			}
 		}
 
-		self::load_fps_library();
-
-		$aws_client_config = array();
-		if ( self::$api_mode = self::API_MODE_SANDBOX ) {
-			$aws_client_config['ServiceURL'] = self::SDBX_ENDPOINT_URL;
-		}
-		$client = new Amazon_FPS_Client( $this->aws_access_key, $this->aws_secret_key, $aws_client_config );
-		$request = new Amazon_FPS_Model_PayRequest();
-		$request->setSenderTokenId( self::get_token() );
-		$request->setCallerReference( self::get_reference() );
-		$amount = new Amazon_FPS_Model_Amount();
-		$amount->setCurrencyCode( $this->get_currency_code() );
-		$amount->setValue( $purchase->get_total( self::get_payment_method() ) );
-		$request->setTransactionAmount($amount);
-		$response = $client->pay( $request );
-
-		/** @var Amazon_FPS_Model_PayResult $result */
-		$result = $response->getPayResult();
-		$transaction_id = $result->getTransactionId();
-		$status = $result->getTransactionStatus();
-		if ( !in_array( $status, array('Pending', 'Success') ) ) {
-			self::set_message(self::__('Unable to complete your transaction with Amazon Payments.'), 'error');
-			return FALSE;
-		}
-
 		// create loop of deals for the payment post
 		$deal_info = array();
 		foreach ( $purchase->get_products() as $item ) {
@@ -223,14 +199,15 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		$payment_id = Group_Buying_Payment::new_payment( array(
 			'payment_method' => self::get_payment_method(),
 			'purchase' => $purchase->get_id(),
-			'amount' => $amount->getValue(),
+			'amount' => $purchase->get_total( self::get_payment_method() ),
 			'data' => array(
-				'api_response' => $response->toXML(),
+				'tokenID' => self::get_token(),
+				'callerReference' => self::get_reference(),
+				'uncaptured_deals' => $deal_info
 			),
-			'transaction_id' => $transaction_id,
 			'deals' => $deal_info,
 			'shipping_address' => $shipping_address,
-		), Group_Buying_Payment::STATUS_PENDING ); // Credit card transactions complete asynchronously. We'll update status on a cron
+		), Group_Buying_Payment::STATUS_AUTHORIZED );
 		if ( !$payment_id ) {
 			return FALSE;
 		}
@@ -251,7 +228,94 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 	public function complete_purchase( Group_Buying_Purchase $purchase ) {
 		$payments = Group_Buying_Payment::get_payments_for_purchase( $purchase->get_id() );
 		foreach ( $payments as $payment_id ) {
-			$this->request_payment_status_update($payment_id);
+			$payment = Group_Buying_Payment::get_instance( $payment_id );
+			$this->capture_payment( $payment );
+		}
+	}
+
+	/**
+	 * Try to capture all pending payments
+	 *
+	 * @return void
+	 */
+	public function capture_pending_payments() {
+		$payments = Group_Buying_Payment::get_pending_payments();
+		foreach ( $payments as $payment_id ) {
+			$payment = Group_Buying_Payment::get_instance( $payment_id );
+			$this->capture_payment( $payment );
+		}
+	}
+
+	/**
+	 * @param Group_Buying_Payment $payment
+	 * @return void
+	 */
+	public function capture_payment( Group_Buying_Payment $payment ){
+		if ( $payment->get_payment_method() != $this->get_payment_method() ) {
+			return; // not the right payment method
+		}
+		if ( $payment->get_status() == Group_Buying_Payment::STATUS_COMPLETE ) {
+			return; // payment is already complete
+		}
+
+		$data = $payment->get_data();
+		if ( empty( $data['tokenID'] ) || empty($data['callerReference']) ) {
+			return; // we don't have the data to complete the transaction
+		}
+
+		$items_to_capture = $this->items_to_capture( $payment );
+		if ( empty($items_to_capture) ) {
+			return; // nothing to capture
+		}
+
+		$tokenID = $data['tokenID'];
+		$callerReference = $data['callerReference'];
+		$resulting_status = ( count( $items_to_capture ) < count( $data['uncaptured_deals'] ) )? Group_Buying_Payment::STATUS_PARTIAL : Group_Buying_Payment::STATUS_COMPLETE;
+
+		$total = 0;
+		foreach ( $items_to_capture as $price ) {
+			$total += $price;
+		}
+
+		$client = $this->get_fps_client();
+		$request = new Amazon_FPS_Model_PayRequest();
+		$request->setSenderTokenId( $tokenID );
+		$request->setCallerReference( $callerReference );
+		$amount = new Amazon_FPS_Model_Amount();
+		$amount->setCurrencyCode( $this->get_currency_code() );
+		$amount->setValue( $total );
+		$request->setTransactionAmount($amount);
+		$response = $client->pay( $request );
+
+		/** @var Amazon_FPS_Model_PayResult $result */
+		$result = $response->getPayResult();
+		$transaction_id = $result->getTransactionId();
+		$transaction_status = $result->getTransactionStatus();
+		if ( !in_array( $transaction_status, array('Pending', 'Success') ) ) {
+			self::set_message(self::__('Unable to complete your transaction with Amazon Payments.'), 'error');
+			return;
+		}
+
+		foreach ( $items_to_capture as $deal_id => $amount ) {
+			unset( $data['uncaptured_deals'][$deal_id] );
+		}
+
+		$data['capture_response'][] = $response->toXML();
+
+		$payment->set_data( $data );
+		if ( $transaction_status == 'Success' ) {
+			do_action( 'payment_captured', $payment, array_keys( $items_to_capture ) );
+		} else {
+			add_post_meta($payment->get_id(), '_amazon_fps_pending_transaction', array(
+				'transaction_id' => $transaction_id,
+				'deal_ids' => array_keys($items_to_capture),
+			));
+			$this->request_payment_status_update($payment->get_id()); // good chance it's already resolved
+		}
+
+		$payment->set_status($resulting_status);
+		if ( $resulting_status == Group_Buying_Payment::STATUS_COMPLETE ) {
+			do_action( 'payment_complete', $payment );
 		}
 	}
 
@@ -263,8 +327,11 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			return FALSE;
 		}
 
+		// see http://docs.aws.amazon.com/AmazonFPS/latest/FPSAdvancedGuide/MultiUsePipeline.html
+		$pipeline->addParameter('callerReference', self::CALLER_REFERENCE_PREFIX.get_current_user_id().'_'.time()); // $user_id_$timestamp
 		$pipeline->addParameter('currencyCode', $this->get_currency_code());
 		$pipeline->addParameter('returnURL', self::get_return_url());
+		$pipeline->addParameter('websiteDescription', get_bloginfo('name'));
 
 		if ( isset( $checkout->cache['shipping'] ) ) {
 			$cache = $checkout->cache['shipping'];
@@ -275,24 +342,21 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			$pipeline->addParameter('zip', $cache['postal_code']);
 		}
 
-		$pipeline->addParameter('callerReference', self::CALLER_REFERENCE_PREFIX.get_current_user_id().'_'.time()); // $user_id:$timestamp
 
-		// If there's only one item, the payment reason should be the deal title, otherwise just the site title
-		if ( $cart->item_count() == 1 ) {
-			$items = $cart->get_items();
-			$item = reset($items);
-			$deal = Group_Buying_Deal::get_instance( $item['deal_id'] );
-			$order_summary = html_entity_decode( strip_tags( $deal->get_title( $item['data'] ) ), ENT_QUOTES, 'UTF-8' );
-		} else {
-			$order_summary = get_bloginfo('name');
+		$order_summary = get_bloginfo('name')."<br>";
+		$order_summary .= "<ul>";
+		foreach ( $cart->get_items() as $item ) {
+			$deal = Group_Buying_Deal::get_instance($item['deal_id']);
+			$order_summary .= '<li>'.$deal->get_title($item['data']).'</li>';
 		}
+		$order_summary .= "</ul>";
 		$pipeline->addParameter('paymentReason', $order_summary);
 
+		$pipeline->addParameter( 'amountType', 'Maximum' );
+		$pipeline->addParameter( 'globalAmountLimit', gb_get_number_format( $filtered_total ) );
 		$pipeline->addParameter( 'transactionAmount', gb_get_number_format( $filtered_total ) );
-		$pipeline->addParameter( 'itemTotal', gb_get_number_format( $cart->get_subtotal() ) );
-		$pipeline->addParameter( 'shipping', gb_get_number_format( $cart->get_shipping_total() ) );
-		$pipeline->addParameter( 'tax', gb_get_number_format( $cart->get_tax_total() ) );
-		// TODO: Do we need a discount param if $filtered_total < $cart->get_total() ?
+		//$pipeline->addParameter( 'usageLimitType1', 'Amount' );
+		//$pipeline->addParameter( 'usageLimitValue1', gb_get_number_format( $filtered_total ) );
 
 		do_action( 'gb_amazon_fps_pipeline', $pipeline, $checkout );
 		return TRUE;
@@ -342,41 +406,53 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 	 * @return void
 	 */
 	public function request_status_updates() {
-		$payment_ids = $this->get_incomplete_payments();
+		$payment_ids = $this->get_payments_with_pending_transactions();
 		foreach ( $payment_ids as $pid ) {
 			$this->request_payment_status_update($pid);
 		}
 	}
 
 	private function request_payment_status_update( $payment_id ) {
-		$payment = Group_Buying_Payment::get_instance($payment_id);
-		self::load_fps_library();
-		$aws_client_config = array();
-		if ( self::$api_mode = self::API_MODE_SANDBOX ) {
-			$aws_client_config['ServiceURL'] = self::SDBX_ENDPOINT_URL;
+		$transactions = get_post_meta($payment_id, '_amazon_fps_pending_transaction', FALSE);
+		if ( empty($transactions) ) {
+			return;
 		}
-		$client = new Amazon_FPS_Client( $this->aws_access_key, $this->aws_secret_key, $aws_client_config );
-		$request = new Amazon_FPS_Model_GetTransactionStatusRequest();
-		$request->setTransactionId($payment->get_transaction_id());
-		try {
-			$response = $client->getTransactionStatus( $request );
+		$payment = Group_Buying_Payment::get_instance($payment_id);
+		$client = $this->get_fps_client();
+		foreach ( $transactions as $meta_array ) {
+			$transaction_id = $meta_array['transaction_id'];
+			$deal_ids = $meta_array['deal_ids'];
+			$request = new Amazon_FPS_Model_GetTransactionStatusRequest();
+			$request->setTransactionId($transaction_id);
+			try {
+				$response = $client->getTransactionStatus( $request );
 
-			/** @var Amazon_FPS_Model_PayResult $result */
-			$result = $response->getGetTransactionStatusResult();
-			$status = $result->getTransactionStatus();
-			$this->handle_status_update($payment, $status);
-		} catch ( Amazon_FPS_Exception $e ) {
-			// nothing to do here
+				/** @var Amazon_FPS_Model_PayResult $result */
+				$result = $response->getGetTransactionStatusResult();
+				$status = strtoupper($result->getTransactionStatus());
+
+				if ( $status == 'FAILURE' || $status == 'CANCELLED' ) {
+					$payment->set_status(Group_Buying_Payment::STATUS_VOID);
+					continue;
+				}
+
+				if ( $status == 'SUCCESS' ) {
+					delete_post_meta( $payment_id, '_amazon_fps_pending_transaction', $meta_array );
+					do_action( 'payment_captured', $payment, $deal_ids );
+				}
+			} catch ( Amazon_FPS_Exception $e ) {
+				// Nothing to do here. We'll just try again next time around.
+			}
 		}
 	}
 
 	/**
 	 * @return array IDs of payments that need status updates, with newest first
 	 */
-	private function get_incomplete_payments() {
+	private function get_payments_with_pending_transactions() {
 		$args = array(
 			'post_type' => Group_Buying_Payment::POST_TYPE,
-			'post_status' => Group_Buying_Payment::STATUS_PENDING,
+			'post_status' => array(Group_Buying_Payment::STATUS_PENDING, Group_Buying_Payment::STATUS_AUTHORIZED, Group_Buying_Payment::STATUS_COMPLETE),
 			'posts_per_page' => -1,
 			'fields' => 'ids',
 			'gb_bypass_filter' => TRUE,
@@ -387,48 +463,12 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 				'key' => '_payment_method',
 				'value' => $this->get_payment_method(),
 			),
+			array( // TODO: make sure this works
+				'key' => '_amazon_fps_pending_transaction',
+			),
 		);
 		$posts = get_posts($args);
 		return $posts;
-	}
-
-	/**
-	 * @param Group_Buying_Payment|string $payment The Payment object, or the transaction ID associated with it
-	 * @param string $status
-	 *
-	 * @return void
-	 */
-	private function handle_status_update( $payment, $status ) {
-		$status = strtoupper($status);
-		if ( !is_object($payment) ) {
-			$payment = $this->get_payment_by_transaction_id( $payment );
-		}
-		if ( empty($payment) ) {
-			return; // can't find a matching payment
-		}
-
-		if ( $status == 'FAILURE' || $status == 'CANCELLED' ) {
-			$payment->set_status(Group_Buying_Payment::STATUS_VOID);
-			return;
-		}
-
-		if ( $status == 'SUCCESS' ) {
-			$deals = $payment->get_deals();
-			$deal_ids = array_keys($deals);
-			do_action( 'payment_captured', $payment, $deal_ids );
-			do_action( 'payment_complete', $payment );
-			$payment->set_status(Group_Buying_Payment::STATUS_COMPLETE);
-			return;
-		}
-	}
-
-	private function get_payment_by_transaction_id( $tid ) {
-		$payments = Group_Buying_Payment::find_by_meta( Group_Buying_Payment::POST_TYPE, array('_trans_id' => $tid));
-		if ( empty($payments) ) {
-			return NULL;
-		}
-		$payment = Group_Buying_Payment::get_instance(reset($payments));
-		return $payment;
 	}
 
 	public static function set_token( $token ) {
@@ -472,6 +512,15 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 
 	public static function register() {
 		self::add_payment_processor( __CLASS__, self::__( 'Amazon' ) );
+	}
+
+	private function get_fps_client() {
+		self::load_fps_library();
+		$aws_client_config = array();
+		if ( self::$api_mode = self::API_MODE_SANDBOX ) {
+			$aws_client_config['ServiceURL'] = self::SDBX_ENDPOINT_URL;
+		}
+		return new Amazon_FPS_Client( $this->aws_access_key, $this->aws_secret_key, $aws_client_config );
 	}
 
 	private static function load_fps_library() {
