@@ -62,7 +62,7 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			}
 
 			if ( !$valid ) {
-				self::set_message(self::__('We were unable to validate your request. Please try again.'), 'error');
+				self::set_message(self::__('We were unable to validate your request. Please try again.'), 'error' );
 			}
 
 			return $valid;
@@ -119,6 +119,8 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 				return;
 			}
 
+			do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Amazon Pipeline', $pipeline );
+
 			$cbui_url = $pipeline->getURL();
 
 			if ( !empty( $cbui_url ) ) {
@@ -154,6 +156,10 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			// this is a new checkout. clear the token so we don't give things away for free
 			self::unset_token();
 			self::unset_reference();
+		}
+
+		if ( isset( $_GET['errorMessage'] ) ) {
+			self::set_message( 'Amazon Payment Error: ' . $_GET['errorMessage'] );
 		}
 	}
 
@@ -287,10 +293,15 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		$request->setTransactionAmount($amount);
 		$response = $client->pay( $request );
 
+		do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Amazon Pay', $response );
+
 		/** @var Amazon_FPS_Model_PayResult $result */
 		$result = $response->getPayResult();
 		$transaction_id = $result->getTransactionId();
 		$transaction_status = $result->getTransactionStatus();
+
+		do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Amazon Pay Result', $result );
+
 		if ( !in_array( $transaction_status, array('Pending', 'Success') ) ) {
 			self::set_message(self::__('Unable to complete your transaction with Amazon Payments.'), 'error');
 			return;
@@ -299,6 +310,9 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 		foreach ( $items_to_capture as $deal_id => $amount ) {
 			unset( $data['uncaptured_deals'][$deal_id] );
 		}
+
+		do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Amazon Pay Status', $transaction_status );
+		do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Amazon Pay Uncaptured Deals', $data['uncaptured_deals']);
 
 		$data['capture_response'][] = $response->toXML();
 
@@ -427,9 +441,13 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			try {
 				$response = $client->getTransactionStatus( $request );
 
+				do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Amazon request_payment_status_update', $response );
+
 				/** @var Amazon_FPS_Model_PayResult $result */
 				$result = $response->getGetTransactionStatusResult();
 				$status = strtoupper($result->getTransactionStatus());
+
+				do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Amazon request_payment_status_update status', $status );
 
 				if ( $status == 'FAILURE' || $status == 'CANCELLED' ) {
 					$payment->set_status(Group_Buying_Payment::STATUS_VOID);

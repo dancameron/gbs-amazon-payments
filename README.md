@@ -5,8 +5,6 @@ Installation
 2. Activate the plugin within the WordPress admin.
 3. Enable this payment gateway by selecting it under Group Buying > Payment Settings within the WordPress admin.
 4. Configure the gateways settings after saving the payment gateway selection.
-5. ...
-
 
 ## Test Account
 
@@ -57,3 +55,8 @@ Your Secret Access Key remains hidden as a further precaution as shown in the fo
 The AWS Security Credentials page also enables you to manage a second set of credentials for rotation.
 This feature enhances the security of your account.
 For more information, see Access Key Rotation in the Amazon FPS Basic Quick Start Developer Guide.
+
+### Error: "Sandbox only error: Caller does not have a FPS Caller Account"
+
+Open a support forum thread so that an Amazon AWS support engineer can properly flag your account to accept Payment API calls.
+[Forum Post](https://forums.aws.amazon.com/message.jspa?messageID=493083#493635)
