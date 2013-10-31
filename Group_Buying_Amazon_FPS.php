@@ -560,4 +560,21 @@ class Group_Buying_Amazon_FPS extends Group_Buying_Offsite_Processors  {
 			return;
 		}
 	}
+
+
+	//////////////
+	// Filters //
+	//////////////
+
+	public static function checkout_icon() {
+		return '<img src="http://g-ecx.images-amazon.com/images/G/01/cba/b/p2._V267703221_SY100_SX600_.gif" title="Amazon" id="amazon_button"/>';
+	}
+
+	public function payment_controls( $controls, Group_Buying_Checkouts $checkout ) {
+		if ( isset( $controls['review'] ) ) {
+			$style = 'style="box-shadow: none;-moz-box-shadow: none;-webkit-box-shadow: none; display: block; width: 250px; height: 53px; background-color: transparent; background-image: url(http://f.cl.ly/items/2N0D0D370G3p1Y370u2l/amazon-checkout.png); background-position: 0 0; padding: 42px 0 0 0; border: none; cursor: pointer; text-indent: -9000px; margin-top: 12px;"';
+			$controls['review'] = str_replace( 'value="'.self::__( 'Review' ).'"', $style . ' value="'.self::__( 'Paypal' ).'"', $controls['review'] );
+		}
+		return $controls;
+	}
 }
